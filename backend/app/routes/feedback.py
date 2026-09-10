@@ -16,6 +16,59 @@ router = APIRouter(
 
 
 # ==========================================
+# Feedback Categorization Function
+# ==========================================
+
+def categorize_feedback(text: str):
+
+    text = text.lower()
+
+    # UI/UX issues - check first
+    if any(word in text for word in [
+        "confusing", "interface", "ui", "design",
+        "difficult to use", "hard to use"
+    ]):
+        return "UI/UX Issue"
+
+    # Technical issues
+    elif any(word in text for word in [
+        "crash", "crashing", "error", "bug"
+    ]):
+        return "Technical Issue"
+
+    # Performance issues
+    elif any(word in text for word in [
+        "slow", "loading", "takes too long",
+        "performance", "lag"
+    ]):
+        return "Performance Issue"
+
+    # Authentication issues
+    elif any(word in text for word in [
+        "login", "password", "reset password",
+        "authentication", "sign in", "sign-in"
+    ]):
+        return "Authentication Issue"
+
+    # Feature requests
+    elif any(word in text for word in [
+        "feature", "add", "please include",
+        "would like", "need a new"
+    ]):
+        return "Feature Request"
+
+    # Payment issues
+    elif any(word in text for word in [
+        "payment", "checkout", "transaction",
+        "billing", "refund"
+    ]):
+        return "Payment Issue"
+
+    else:
+        return "General Feedback"
+
+
+# ==========================================
 # 1. Upload Feedback CSV
 # ==========================================
 
@@ -52,13 +105,13 @@ async def upload_feedback(
             detail="Only CSV files are allowed"
         )
 
-    # Read CSV
+    # ==========================================
+    # Read CSV File
+    # ==========================================
+
     try:
         contents = await file.read()
-
-        df = pd.read_csv(
-            BytesIO(contents)
-        )
+        df = pd.read_csv(BytesIO(contents))
 
     except Exception:
         raise HTTPException(
@@ -73,41 +126,72 @@ async def upload_feedback(
             detail="CSV must contain a 'text' column"
         )
 
-    # Clean feedback
-    df = df[["text"]].dropna()
+    # ==========================================
+    # Data Cleaning & Preprocessing
+    # ==========================================
 
+    # Keep only text column
+    df = df[["text"]].copy()
+
+    # Remove null values
+    df = df.dropna()
+
+    # Convert to string
+    df["text"] = df["text"].astype(str)
+
+    # Remove extra spaces
     df["text"] = (
         df["text"]
-        .astype(str)
         .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
     )
 
+    # Remove empty feedback
     df = df[df["text"] != ""]
 
+    # Remove duplicate feedback inside CSV
+    df = df.drop_duplicates(subset=["text"])
+
+    # Create normalized text
+    df["normalized_text"] = df["text"].str.lower()
+
+    # Check valid feedback
     if df.empty:
         raise HTTPException(
             status_code=400,
             detail="No valid feedback found in CSV"
         )
 
-    # Prepare MongoDB documents
+    # ==========================================
+    # Prepare MongoDB Documents
+    # ==========================================
+
     feedback_documents = []
 
-    for text in df["text"]:
+    for _, row in df.iterrows():
+
+        category = categorize_feedback(
+            row["normalized_text"]
+        )
 
         feedback_documents.append({
             "workspace_id": ObjectId(workspace_id),
-            "text": text,
+            "text": row["text"],
+            "normalized_text": row["normalized_text"],
+            "category": category,
             "created_at": datetime.now(timezone.utc)
         })
 
-    # Insert feedback into MongoDB
+    # ==========================================
+    # Insert Feedback into MongoDB
+    # ==========================================
+
     result = feedback_collection.insert_many(
         feedback_documents
     )
 
     return {
-        "message": "Feedback uploaded successfully",
+        "message": "Feedback uploaded, cleaned and categorized successfully",
         "workspace_id": workspace_id,
         "total_feedback": len(result.inserted_ids)
     }
@@ -154,6 +238,14 @@ def get_feedback(
         result.append({
             "id": str(item["_id"]),
             "text": item["text"],
+            "normalized_text": item.get(
+                "normalized_text",
+                item["text"].lower()
+            ),
+            "category": item.get(
+                "category",
+                categorize_feedback(item["text"])
+            ),
             "created_at": item["created_at"]
         })
 

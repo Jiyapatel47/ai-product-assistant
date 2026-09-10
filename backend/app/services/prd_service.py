@@ -7,6 +7,7 @@ from google import genai
 
 load_dotenv()
 
+
 client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
@@ -17,51 +18,85 @@ def generate_prd(analysis):
     prompt = f"""
 You are an expert Product Manager.
 
-Based on the following customer feedback analysis, create a Product Requirements Document (PRD).
+Based on the following customer feedback analysis, create a complete
+and practical Product Requirements Document (PRD).
 
-Analysis:
-{json.dumps(analysis, default=str)}
+Customer Feedback Analysis:
+{json.dumps(analysis, default=str, indent=2)}
 
-Return ONLY valid JSON with this exact structure:
+Return ONLY valid JSON with exactly this structure:
 
 {{
-    "title": "PRD title",
-    "problem_statement": "Brief problem statement",
-    "objective": "Main product objective",
+    "title": "...",
+    "problem_statement": "...",
+    "objective": "...",
+
+    "target_users": [
+        "..."
+    ],
 
     "user_stories": [
         {{
-            "story": "As a user, I want..."
+            "story": "As a user, I want ... so that ..."
         }}
     ],
 
     "functional_requirements": [
-        "Requirement 1",
-        "Requirement 2"
+        "..."
     ],
 
     "non_functional_requirements": [
-        "Performance requirement",
-        "Security requirement"
+        "..."
     ],
 
     "acceptance_criteria": [
-        "Criteria 1",
-        "Criteria 2"
+        "..."
     ],
 
     "success_metrics": [
-        "Metric 1",
-        "Metric 2"
-    ]
+        "..."
+    ],
+
+    "priority": "High/Medium/Low"
 }}
 
-Keep the PRD concise, practical, and actionable.
+Rules:
+- Keep the PRD concise.
+- Maximum 5 user stories.
+- Maximum 5 functional requirements.
+- Maximum 5 acceptance criteria.
+- Return only valid JSON.
+- Do not use markdown.
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt
-    )
+    try:
 
-    return json.loads(response.text)
+        response = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=prompt
+        )
+
+        response_text = response.text.strip()
+
+        # Remove markdown if present
+        if response_text.startswith("```json"):
+            response_text = response_text.replace(
+                "```json", ""
+            ).replace("```", "").strip()
+
+        elif response_text.startswith("```"):
+            response_text = response_text.replace(
+                "```", ""
+            ).strip()
+
+        return json.loads(response_text)
+
+    except json.JSONDecodeError as e:
+        raise Exception(
+            f"Invalid JSON response from AI: {str(e)}"
+        )
+
+    except Exception as e:
+        raise Exception(
+            f"Gemini PRD generation error: {str(e)}"
+        )
