@@ -9,7 +9,7 @@ from app.config.database import (
     workspaces_collection
 )
 
-from app.services.gemini_service import analyze_feedback
+from app.services.ai_pipeline import analyze_feedback
 from app.utils.dependencies import get_current_user
 
 
@@ -19,96 +19,57 @@ router = APIRouter(
 )
 
 
-# ==========================================
-# HELPER: Categorize Feedback
-# ==========================================
-
 def categorize_feedback(text: str):
-
     text = text.lower()
 
-    # Payment issues
-    if any(word in text for word in [
-        "payment",
-        "checkout",
-        "transaction",
-        "pay"
-    ]):
-        if any(word in text for word in [
-            "confusing",
-            "confuse",
-            "difficult"
-        ]):
+    if any(word in text for word in ["payment", "checkout", "transaction", "pay"]):
+        if any(word in text for word in ["confusing", "confuse", "difficult"]):
             return "UI/UX Issue"
-
         return "Payment Issue"
 
-    # Authentication issues
-    if any(word in text for word in [
-        "password",
-        "login",
-        "sign in",
-        "reset"
-    ]):
-        if any(word in text for word in [
-            "slow",
-            "long",
-            "takes too long"
-        ]):
+    if any(word in text for word in ["password", "login", "sign in", "reset"]):
+        if any(word in text for word in ["slow", "long", "takes too long"]):
             return "Performance Issue"
-
         return "Authentication Issue"
 
-    # Performance issues
-    if any(word in text for word in [
-        "slow",
-        "lag",
-        "loading",
-        "performance",
-        "takes too long"
-    ]):
+    if any(
+        word in text
+        for word in ["slow", "lag", "loading", "performance", "takes too long"]
+    ):
         return "Performance Issue"
 
-    # UI/UX issues
-    if any(word in text for word in [
-        "confusing",
-        "confuse",
-        "ui",
-        "ux",
-        "design",
-        "layout"
-    ]):
+    if any(
+        word in text
+        for word in ["confusing", "confuse", "ui", "ux", "design", "layout"]
+    ):
         return "UI/UX Issue"
 
-    # Technical issues
-    if any(word in text for word in [
-        "crash",
-        "crashing",
-        "error",
-        "bug",
-        "not working"
-    ]):
+    if any(
+        word in text
+        for word in ["crash", "crashing", "error", "bug", "not working"]
+    ):
         return "Technical Issue"
 
     return "General Feedback"
 
 
-# ==========================================
-# POST: Create AI Analysis
-# ==========================================
+# ============================================================
+# POST - Run AI Analysis
+# ============================================================
 
 @router.post("/{workspace_id}")
 def analyze_workspace(
     workspace_id: str,
     current_user=Depends(get_current_user)
 ):
-
+    # Validate workspace ID
     if not ObjectId.is_valid(workspace_id):
         raise HTTPException(
             status_code=400,
             detail="Invalid workspace ID"
         )
 
+    # Check workspace ownership
     workspace = workspaces_collection.find_one({
         "_id": ObjectId(workspace_id),
         "owner_id": current_user["_id"]
@@ -120,6 +81,7 @@ def analyze_workspace(
             detail="Workspace not found"
         )
 
+    # Get feedback
     feedbacks = list(
         feedback_collection.find({
             "workspace_id": ObjectId(workspace_id)
@@ -132,13 +94,25 @@ def analyze_workspace(
             detail="No feedback found for this workspace"
         )
 
-    feedback_texts = [
-        feedback["text"]
-        for feedback in feedbacks
-    ]
+    # --------------------------------------------------------
+    # Convert database feedback into AI pipeline format
+    # --------------------------------------------------------
+
+    feedback_data = []
+
+    for feedback in feedbacks:
+        feedback_data.append({
+            "content": feedback.get("text", ""),
+            "source": feedback.get("source", "customer"),
+            "date": feedback.get("date") or feedback.get("created_at")
+        })
+
+    # --------------------------------------------------------
+    # Run AI Pipeline
+    # --------------------------------------------------------
 
     try:
-        ai_result = analyze_feedback(feedback_texts)
+        ai_result = analyze_feedback(feedback_data)
 
     except Exception as e:
         raise HTTPException(
@@ -146,62 +120,142 @@ def analyze_workspace(
             detail=f"AI analysis failed: {str(e)}"
         )
 
+    # --------------------------------------------------------
+    # Save analysis result to MongoDB
+    # --------------------------------------------------------
+
     analysis = {
         "workspace_id": ObjectId(workspace_id),
+
         "total_feedback": len(feedbacks),
-        "problems": ai_result.get("problems", []),
-        "themes": ai_result.get("themes", []),
+
+        # New AI Pipeline Results
+        "cleaned_feedback": ai_result.get(
+            "cleaned_feedback",
+            []
+        ),
+
+        "themes": ai_result.get(
+            "themes",
+            []
+        ),
+
+        "pain_points": ai_result.get(
+            "pain_points",
+            []
+        ),
+
         "feature_requests": ai_result.get(
             "feature_requests",
             []
         ),
-        "priorities": ai_result.get("priorities", []),
-        "recommendations": ai_result.get(
-            "recommendations",
+
+        "feature_clusters": ai_result.get(
+            "feature_clusters",
             []
         ),
+
+        "trend_analysis": ai_result.get(
+            "trend_analysis",
+            {}
+        ),
+
+        # Compatibility fields
+        # These are kept so existing frontend/backend
+        # functionality does not immediately break.
+        "problems": ai_result.get(
+            "pain_points",
+            []
+        ),
+
+        "priorities": [],
+
+        "recommendations": [],
+
         "status": "completed",
+
         "created_at": datetime.now(timezone.utc)
     }
 
     result = analyses_collection.insert_one(analysis)
 
+    # --------------------------------------------------------
+    # Return result
+    # --------------------------------------------------------
+
     return {
         "message": "AI analysis completed successfully",
-        "analysis_id": str(result.inserted_id),
+
+        "analysis_id": str(
+            result.inserted_id
+        ),
+
         "workspace_id": workspace_id,
+
         "total_feedback": len(feedbacks),
+
         "status": "completed",
-        "problems": ai_result.get("problems", []),
-        "themes": ai_result.get("themes", []),
+
+        # New AI results
+        "cleaned_feedback": ai_result.get(
+            "cleaned_feedback",
+            []
+        ),
+
+        "themes": ai_result.get(
+            "themes",
+            []
+        ),
+
+        "pain_points": ai_result.get(
+            "pain_points",
+            []
+        ),
+
         "feature_requests": ai_result.get(
             "feature_requests",
             []
         ),
-        "priorities": ai_result.get("priorities", []),
-        "recommendations": ai_result.get(
-            "recommendations",
+
+        "feature_clusters": ai_result.get(
+            "feature_clusters",
             []
-        )
+        ),
+
+        "trend_analysis": ai_result.get(
+            "trend_analysis",
+            {}
+        ),
+
+        # Compatibility fields
+        "problems": ai_result.get(
+            "pain_points",
+            []
+        ),
+
+        "priorities": [],
+
+        "recommendations": []
     }
 
 
-# ==========================================
-# GET: Feedback Insights & Trend Analysis
-# ==========================================
+# ============================================================
+# GET - Insights
+# ============================================================
 
 @router.get("/insights/{workspace_id}")
 def get_insights(
     workspace_id: str,
     current_user=Depends(get_current_user)
 ):
-
+    # Validate workspace ID
     if not ObjectId.is_valid(workspace_id):
         raise HTTPException(
             status_code=400,
             detail="Invalid workspace ID"
         )
 
+    # Check workspace ownership
     workspace = workspaces_collection.find_one({
         "_id": ObjectId(workspace_id),
         "owner_id": current_user["_id"]
@@ -213,6 +267,7 @@ def get_insights(
             detail="Workspace not found"
         )
 
+    # Get feedback
     feedbacks = list(
         feedback_collection.find({
             "workspace_id": ObjectId(workspace_id)
@@ -225,10 +280,13 @@ def get_insights(
             detail="No feedback found"
         )
 
+    # --------------------------------------------------------
+    # Category distribution
+    # --------------------------------------------------------
+
     category_counts = {}
 
     for feedback in feedbacks:
-
         category = feedback.get("category")
 
         if not category:
@@ -243,7 +301,6 @@ def get_insights(
     category_distribution = []
 
     for category, count in category_counts.items():
-
         category_distribution.append({
             "category": category,
             "count": count
@@ -254,16 +311,23 @@ def get_insights(
         reverse=True
     )
 
+    # --------------------------------------------------------
+    # Top category
+    # --------------------------------------------------------
+
     top_category = (
         category_distribution[0]
         if category_distribution
         else None
     )
 
+    # --------------------------------------------------------
+    # Trends
+    # --------------------------------------------------------
+
     trends = []
 
     for item in category_distribution:
-
         percentage = round(
             (item["count"] / len(feedbacks)) * 100,
             2
@@ -277,6 +341,7 @@ def get_insights(
 
     return {
         "workspace_id": workspace_id,
+
         "total_feedback": len(feedbacks),
 
         "top_category": (
@@ -292,21 +357,20 @@ def get_insights(
         ),
 
         "category_distribution": category_distribution,
+
         "trends": trends
     }
 
 
-# ==========================================
-# GET: Feature Request Aggregation
-# IMPORTANT: Keep BEFORE /{workspace_id}
-# ==========================================
+# ============================================================
+# GET - Feature Requests
+# ============================================================
 
 @router.get("/features/{workspace_id}")
 def get_feature_requests(
     workspace_id: str,
     current_user=Depends(get_current_user)
 ):
-
     # Validate workspace ID
     if not ObjectId.is_valid(workspace_id):
         raise HTTPException(
@@ -331,7 +395,9 @@ def get_feature_requests(
         {
             "workspace_id": ObjectId(workspace_id)
         },
-        sort=[("created_at", -1)]
+        sort=[
+            ("created_at", -1)
+        ]
     )
 
     if not analysis:
@@ -340,17 +406,36 @@ def get_feature_requests(
             detail="No AI analysis found. Please run analysis first."
         )
 
+    # --------------------------------------------------------
+    # New AI pipeline feature requests
+    # --------------------------------------------------------
+
     feature_requests = analysis.get(
         "feature_requests",
         []
     )
 
-    priorities = analysis.get(
-        "priorities",
+    feature_clusters = analysis.get(
+        "feature_clusters",
         []
     )
 
-    # Aggregate features
+    # If feature clusters exist, return them
+    if feature_clusters:
+        return {
+            "workspace_id": workspace_id,
+
+            "total_feature_opportunities": len(
+                feature_clusters
+            ),
+
+            "feature_opportunities": feature_clusters
+        }
+
+    # --------------------------------------------------------
+    # Fallback to feature requests
+    # --------------------------------------------------------
+
     aggregated_features = []
 
     for feature in feature_requests:
@@ -365,75 +450,51 @@ def get_feature_requests(
             ""
         )
 
-        # Default priority
-        priority = "Medium"
+        request_count = feature.get(
+            "request_count",
+            0
+        )
 
-        feature_lower = feature_name.lower()
-
-        # Match feature with AI priority
-        for item in priorities:
-
-            issue = item.get(
-                "issue",
-                ""
-            ).lower()
-
-            if (
-                "payment" in feature_lower
-                or "checkout" in feature_lower
-            ):
-                if (
-                    "payment" in issue
-                    or "checkout" in issue
-                ):
-                    priority = item.get(
-                        "priority",
-                        "High"
-                    )
-
-            elif "password" in feature_lower:
-
-                if (
-                    "password" in issue
-                    or "reset" in issue
-                ):
-                    priority = item.get(
-                        "priority",
-                        "Medium"
-                    )
+        original_requests = feature.get(
+            "original_requests",
+            []
+        )
 
         aggregated_features.append({
             "feature": feature_name,
             "description": description,
-            "priority": priority
+            "request_count": request_count,
+            "original_requests": original_requests
         })
 
     return {
         "workspace_id": workspace_id,
+
         "total_feature_opportunities": len(
             aggregated_features
         ),
+
         "feature_opportunities": aggregated_features
     }
 
 
-# ==========================================
-# GET: Get Latest Saved AI Analysis
-# IMPORTANT: Keep this LAST
-# ==========================================
+# ============================================================
+# GET - Latest AI Analysis
+# ============================================================
 
 @router.get("/{workspace_id}")
 def get_latest_analysis(
     workspace_id: str,
     current_user=Depends(get_current_user)
 ):
-
+    # Validate workspace ID
     if not ObjectId.is_valid(workspace_id):
         raise HTTPException(
             status_code=400,
             detail="Invalid workspace ID"
         )
 
+    # Check workspace ownership
     workspace = workspaces_collection.find_one({
         "_id": ObjectId(workspace_id),
         "owner_id": current_user["_id"]
@@ -445,11 +506,14 @@ def get_latest_analysis(
             detail="Workspace not found"
         )
 
+    # Get latest analysis
     analysis = analyses_collection.find_one(
         {
             "workspace_id": ObjectId(workspace_id)
         },
-        sort=[("created_at", -1)]
+        sort=[
+            ("created_at", -1)
+        ]
     )
 
     if not analysis:
@@ -459,32 +523,69 @@ def get_latest_analysis(
         )
 
     return {
-        "analysis_id": str(analysis["_id"]),
+        "analysis_id": str(
+            analysis["_id"]
+        ),
+
         "workspace_id": workspace_id,
+
         "total_feedback": analysis.get(
             "total_feedback",
             0
         ),
-        "problems": analysis.get(
-            "problems",
+
+        # New AI pipeline fields
+        "cleaned_feedback": analysis.get(
+            "cleaned_feedback",
             []
         ),
+
         "themes": analysis.get(
             "themes",
             []
         ),
+
+        "pain_points": analysis.get(
+            "pain_points",
+            []
+        ),
+
         "feature_requests": analysis.get(
             "feature_requests",
             []
         ),
+
+        "feature_clusters": analysis.get(
+            "feature_clusters",
+            []
+        ),
+
+        "trend_analysis": analysis.get(
+            "trend_analysis",
+            {}
+        ),
+
+        # Compatibility fields
+        "problems": analysis.get(
+            "problems",
+            []
+        ),
+
         "priorities": analysis.get(
             "priorities",
             []
         ),
+
         "recommendations": analysis.get(
             "recommendations",
             []
         ),
-        "status": analysis.get("status"),
-        "created_at": analysis.get("created_at")
+
+        "status": analysis.get(
+            "status"
+        ),
+
+        "created_at": analysis.get(
+            "created_at"
+        )
     }
